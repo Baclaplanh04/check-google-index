@@ -4,74 +4,76 @@ import requests
 import time
 import re
 from io import BytesIO
-from datetime import datetime, timedelta
+from datetime import datetime
 from urllib.parse import quote_plus
 
+# =============== CẤU HÌNH GIAO DIỆN ===============
 st.set_page_config(page_title="Kiểm tra Google Index - Profile", layout="centered")
 
-st.title("Kiểm tra Google Index cho danh sách Profile")
-st.markdown(
-    "Tải lên file `.xlsx` chứa danh sách URL (bắt đầu từ dòng 3). Ứng dụng sẽ kiểm tra từng URL xem có được Google index hay không, "
-    "và (nếu có) lấy ngày cached để xác định có index trong 30 ngày qua hay không."
-)
+st.title("🕵️‍♂️ Kiểm tra Google Index cho danh sách Profile")
+st.markdown("""
+Ứng dụng này giúp bạn kiểm tra xem các URL trong file Excel có được Google index hay không,  
+và nếu có thì có **index trong 30 ngày qua** hay không.
+""")
 
-# ====== UPLOAD FILE ======
-uploaded_file = st.file_uploader("Chọn file Excel (.xlsx)", type=["xlsx"])
+# =============== UPLOAD FILE ===============
+uploaded_file = st.file_uploader("📤 Tải lên file Excel (.xlsx)", type=["xlsx"])
 
-# ====== CÀI ĐẶT ======
-st.sidebar.header("Cài đặt kiểm tra")
-delay = st.sidebar.number_input("Delay giữa mỗi request (giây)", min_value=0.5, value=2.0, step=0.5)
-limit_urls = st.sidebar.number_input("Giới hạn tối đa URLs (để chạy 1 lần)", min_value=1, value=1000, step=1)
-user_agent = st.sidebar.selectbox("User-Agent mẫu", [
+# =============== CÀI ĐẶT ===============
+st.sidebar.header("⚙️ Cài đặt kiểm tra")
+delay = st.sidebar.number_input("⏱ Delay giữa mỗi lần kiểm tra (giây)", min_value=0.5, value=2.0, step=0.5)
+limit_urls = st.sidebar.number_input("🔢 Giới hạn số URL kiểm tra", min_value=1, value=1000, step=1)
+user_agent = st.sidebar.selectbox("🧭 Chọn User-Agent", [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/118.0 Safari/537.36",
 ])
-
 headers = {"User-Agent": user_agent}
 
-# ====== HÀM CHÍNH ======
+
+# =============== HÀM KIỂM TRA INDEX ===============
 def is_indexed(url, headers):
-    """Kiểm tra xem URL có được Google index hay không."""
-    r = requests.get("https://www.google.com/search?q=" + quote_plus(url), headers=headers, timeout=20)
-    text = r.text
+    """Kiểm tra xem URL có được Google index hay không (chính xác hơn)."""
+    query = f"site:{url}"
+    try:
+        resp = requests.get("https://www.google.com/search?q=" + quote_plus(query), headers=headers, timeout=20)
+        html = resp.text.lower()
+    except Exception as e:
+        return False, f"Lỗi request: {e}"
 
-    # Nếu có kết quả thống kê số lượng -> có thể đã index
-    if re.search(r"results?\s?\d|About [\d,]+ results|Kết quả|Có khoảng", text, re.I):
-        return True, text
+    # Kiểm tra CAPTCHA / chặn tạm thời
+    if "unusual traffic" in html or "recaptcha" in html:
+        return False, "⚠️ Google chặn truy cập tạm thời (CAPTCHA)."
 
-    # Nếu có thông báo "did not match any documents" -> chưa index
-    if re.search(r"did not match any documents|No results found|Không tìm thấy kết quả|không tìm thấy", text, re.I):
-        return False, text
+    # Nếu có khối kết quả tìm kiếm -> coi như có index
+    if re.search(r'class="g"|id="search"|kết quả|about [\d,]+ results|có khoảng', html):
+        return True, html
 
-    # Nếu có khối kết quả (class="g") -> có thể index
-    if 'class="g"' in text or 'id="search"' in text:
-        return True, text
+    # Nếu có thông báo không có kết quả
+    if "did not match any documents" in html or "no results found" in html or "không tìm thấy kết quả" in html:
+        return False, html
 
-    # Mặc định là chưa index
-    return False, text
+    # Trường hợp mặc định
+    return False, html
 
 
 def google_cache_date(url, headers):
-    """Dùng cache:URL để lấy ngày cached page và parse date (nếu có)."""
+    """Lấy ngày cached page từ Google (nếu có)."""
     q = f"cache:{url}"
-    url_cache = "https://www.google.com/search?q=" + quote_plus(q)
-    r = requests.get(url_cache, headers=headers, timeout=20)
-    text = r.text
+    try:
+        r = requests.get("https://www.google.com/search?q=" + quote_plus(q), headers=headers, timeout=20)
+        text = r.text
+    except:
+        return None
 
-    # Tìm ngày tháng trong nội dung cache (dạng tiếng Anh hoặc Việt)
     match = re.search(
         r"As it appeared on (\w+ \d{1,2}, \d{4})|Lưu trong bộ nhớ cache.*?(\d{1,2}) tháng (\d{1,2}), (\d{4})",
-        text,
-        re.I
+        text, re.I
     )
-
     if match:
         try:
             if match.group(1):
-                # English format
                 return datetime.strptime(match.group(1), "%B %d, %Y").strftime("%d/%m/%Y")
             else:
-                # Vietnamese format
                 d, m, y = match.group(2), match.group(3), match.group(4)
                 return f"{int(d):02d}/{int(m):02d}/{y}"
         except:
@@ -79,19 +81,19 @@ def google_cache_date(url, headers):
     return None
 
 
-# ====== XỬ LÝ FILE ======
+# =============== XỬ LÝ FILE EXCEL ===============
 if uploaded_file:
+    header_row = st.number_input("📄 Dòng chứa tiêu đề (ví dụ: 1 hoặc 3)", min_value=1, value=1, step=1)
     try:
-        df = pd.read_excel(uploaded_file)
+        df = pd.read_excel(uploaded_file, header=header_row - 1)
     except Exception as e:
         st.error(f"Lỗi đọc file Excel: {e}")
         st.stop()
 
-    # Tìm cột chứa URL (tên gần giống 'profile', 'url', hoặc 'link')
-    col_candidates = [c for c in df.columns if re.search(r'profile|url|link', c, re.I)]
-
+    # Tìm cột chứa URL (Profile/URL/Link)
+    col_candidates = [c for c in df.columns if re.search(r'profile|url|link', str(c), re.I)]
     if not col_candidates:
-        st.error("Không tìm thấy cột chứa URL (ví dụ: Profile, URL, Link). Vui lòng kiểm tra lại file Excel.")
+        st.error("❌ Không tìm thấy cột chứa URL (ví dụ: Profile, URL, Link). Vui lòng kiểm tra lại file Excel.")
         st.stop()
 
     col_name = col_candidates[0]
@@ -101,15 +103,15 @@ if uploaded_file:
         st.error("Không có URL nào trong file Excel.")
         st.stop()
 
-    st.success(f"Tìm thấy {len(profiles)} URL. (Sẽ xử lý tối đa {limit_urls} URL theo cài đặt.)")
+    st.success(f"Tìm thấy {len(profiles)} URL. (Sẽ kiểm tra tối đa {limit_urls} URL.)")
 
-    # ====== CHẠY KIỂM TRA ======
+    # =============== CHẠY KIỂM TRA ===============
     results = []
     progress = st.progress(0)
     status_text = st.empty()
 
     for i, url in enumerate(profiles):
-        status_text.text(f"Đang kiểm tra {i+1}/{len(profiles)}: {url}")
+        status_text.text(f"🔍 Đang kiểm tra {i+1}/{len(profiles)}: {url}")
         try:
             indexed, html = is_indexed(url, headers)
             cache_date = google_cache_date(url, headers) if indexed else None
@@ -123,12 +125,12 @@ if uploaded_file:
         progress.progress((i + 1) / len(profiles))
         time.sleep(delay)
 
-    # ====== HIỂN THỊ KẾT QUẢ ======
-    st.subheader("Kết quả kiểm tra")
+    # =============== HIỂN THỊ KẾT QUẢ ===============
+    st.subheader("📊 Kết quả kiểm tra")
     result_df = pd.DataFrame(results)
     st.dataframe(result_df, use_container_width=True)
 
-    # Tải kết quả Excel
+    # Xuất file Excel
     output = BytesIO()
     result_df.to_excel(output, index=False)
     st.download_button(
@@ -139,4 +141,4 @@ if uploaded_file:
     )
 
 st.sidebar.markdown("---")
-st.sidebar.info("Ứng dụng sử dụng truy vấn Google (miễn phí). Nếu bạn muốn kết quả ổn định hơn, cân nhắc dùng SerpAPI.")
+st.sidebar.info("💡 Mẹo: Nếu bị báo 'Không có URL', hãy kiểm tra lại dòng tiêu đề hoặc tên cột (Profile/URL/Link).")
