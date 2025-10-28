@@ -49,8 +49,8 @@ def google_search_site(url, headers):
     text = r.text
     # Quick heuristic: if results stats exists -> probably indexed
     # results stats pattern: "About 1,230 results" or localized
-    if re.search(r"(?i)result(s)? \d|(?i)About [\d,]+ results|(?i)Kết quả|(?i)Có khoảng", text):
-        return True, text
+    if re.search(r"results?\s?\d|About [\d,]+ results|Kết quả|Có khoảng", text, re.I):
+    return True, text
     # If "did not match any documents" or "Không tìm thấy kết quả" -> not indexed
     if re.search(r"did not match any documents|No results found|Không tìm thấy kết quả|không tìm thấy", text, re.I):
         return False, text
