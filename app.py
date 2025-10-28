@@ -4,37 +4,32 @@ import requests
 import time
 import re
 from io import BytesIO
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import quote_plus
 
-# ======================
-# CẤU HÌNH GIAO DIỆN
-# ======================
 st.set_page_config(page_title="Kiểm tra Google Index - Profile", layout="centered")
 
-st.title("🧭 Kiểm tra Google Index cho danh sách Profile")
-st.markdown("""
-Tải lên file **.xlsx** chứa cột **Profile** (bắt đầu từ dòng 3).  
-Ứng dụng sẽ kiểm tra từng URL xem có được Google index hay không và (nếu có) lấy ngày cached để xác định có index trong 30 ngày qua hay không.
-""")
+st.title("Kiểm tra Google Index cho danh sách Profile")
+st.markdown(
+    "Tải lên file `.xlsx` chứa danh sách URL (bắt đầu từ dòng 3). Ứng dụng sẽ kiểm tra từng URL xem có được Google index hay không, "
+    "và (nếu có) lấy ngày cached để xác định có index trong 30 ngày qua hay không."
+)
 
-# ======================
-# CÀI ĐẶT NGƯỜI DÙNG
-# ======================
-delay = st.sidebar.number_input("⏱️ Delay giữa mỗi request (giây)", min_value=1.0, max_value=10.0, value=2.0, step=0.5)
-limit = st.sidebar.number_input("🔢 Giới hạn tối đa URLs (để chạy 1 lần)", min_value=1, max_value=1000, value=1000, step=1)
-user_agent = st.sidebar.selectbox("🧩 User-Agent mẫu", [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
-    "Mozilla/5.0 (X11; Linux x86_64)"
+# ====== UPLOAD FILE ======
+uploaded_file = st.file_uploader("Chọn file Excel (.xlsx)", type=["xlsx"])
+
+# ====== CÀI ĐẶT ======
+st.sidebar.header("Cài đặt kiểm tra")
+delay = st.sidebar.number_input("Delay giữa mỗi request (giây)", min_value=0.5, value=2.0, step=0.5)
+limit_urls = st.sidebar.number_input("Giới hạn tối đa URLs (để chạy 1 lần)", min_value=1, value=1000, step=1)
+user_agent = st.sidebar.selectbox("User-Agent mẫu", [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/118.0 Safari/537.36",
 ])
 
-st.sidebar.info("Ứng dụng sử dụng truy vấn Google (miễn phí). Nếu bạn muốn kết quả ổn định hơn, cần cân nhắc dùng SerpAPI.")
+headers = {"User-Agent": user_agent}
 
-
-# ======================
-# HÀM KIỂM TRA INDEX
-# ======================
+# ====== HÀM CHÍNH ======
 def is_indexed(url, headers):
     """Kiểm tra xem URL có được Google index hay không."""
     r = requests.get("https://www.google.com/search?q=" + quote_plus(url), headers=headers, timeout=20)
@@ -56,9 +51,6 @@ def is_indexed(url, headers):
     return False, text
 
 
-# ======================
-# HÀM LẤY NGÀY CACHE
-# ======================
 def google_cache_date(url, headers):
     """Dùng cache:URL để lấy ngày cached page và parse date (nếu có)."""
     q = f"cache:{url}"
@@ -84,15 +76,10 @@ def google_cache_date(url, headers):
                 return f"{int(d):02d}/{int(m):02d}/{y}"
         except:
             return None
-
     return None
 
 
-# ======================
-# XỬ LÝ FILE NGƯỜI DÙNG
-# ======================
-uploaded_file = st.file_uploader("📂 Chọn file Excel (.xlsx)", type=["xlsx"])
-
+# ====== XỬ LÝ FILE ======
 if uploaded_file:
     try:
         df = pd.read_excel(uploaded_file)
@@ -100,49 +87,56 @@ if uploaded_file:
         st.error(f"Lỗi đọc file Excel: {e}")
         st.stop()
 
-    if 'Profile' not in df.columns:
-        st.error("File Excel phải có cột 'Profile' chứa danh sách URL cần kiểm tra.")
+    # Tìm cột chứa URL (tên gần giống 'profile', 'url', hoặc 'link')
+    col_candidates = [c for c in df.columns if re.search(r'profile|url|link', c, re.I)]
+
+    if not col_candidates:
+        st.error("Không tìm thấy cột chứa URL (ví dụ: Profile, URL, Link). Vui lòng kiểm tra lại file Excel.")
         st.stop()
 
-    profiles = df['Profile'].dropna().tolist()
-    profiles = profiles[:limit]
+    col_name = col_candidates[0]
+    profiles = df[col_name].dropna().tolist()[:limit_urls]
 
-    st.success(f"Tìm thấy {len(profiles)} URL. (Sẽ xử lý tối đa {limit} URL theo cài đặt.)")
+    if not profiles:
+        st.error("Không có URL nào trong file Excel.")
+        st.stop()
 
-    if st.button("🚀 Bắt đầu kiểm tra"):
-        headers = {"User-Agent": user_agent}
-        results = []
+    st.success(f"Tìm thấy {len(profiles)} URL. (Sẽ xử lý tối đa {limit_urls} URL theo cài đặt.)")
 
-        progress = st.progress(0)
-        status_text = st.empty()
+    # ====== CHẠY KIỂM TRA ======
+    results = []
+    progress = st.progress(0)
+    status_text = st.empty()
 
-        for i, url in enumerate(profiles, start=1):
-            status_text.text(f"Đang kiểm tra {i}/{len(profiles)}: {url}")
+    for i, url in enumerate(profiles):
+        status_text.text(f"Đang kiểm tra {i+1}/{len(profiles)}: {url}")
+        try:
+            indexed, html = is_indexed(url, headers)
+            cache_date = google_cache_date(url, headers) if indexed else None
+            results.append({
+                "URL": url,
+                "Đã Index": "✅ Có" if indexed else "❌ Không",
+                "Ngày Cache": cache_date if cache_date else "-"
+            })
+        except Exception as e:
+            results.append({"URL": url, "Đã Index": "⚠️ Lỗi", "Ngày Cache": str(e)})
+        progress.progress((i + 1) / len(profiles))
+        time.sleep(delay)
 
-            try:
-                indexed, text = is_indexed(url, headers)
-                cached_date = google_cache_date(url, headers) if indexed else None
+    # ====== HIỂN THỊ KẾT QUẢ ======
+    st.subheader("Kết quả kiểm tra")
+    result_df = pd.DataFrame(results)
+    st.dataframe(result_df, use_container_width=True)
 
-                results.append({
-                    "URL": url,
-                    "Đã index": "✅ Có" if indexed else "❌ Không",
-                    "Ngày cache": cached_date if cached_date else "",
-                })
+    # Tải kết quả Excel
+    output = BytesIO()
+    result_df.to_excel(output, index=False)
+    st.download_button(
+        label="📥 Tải kết quả về (.xlsx)",
+        data=output.getvalue(),
+        file_name="ket_qua_google_index.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
-            except Exception as e:
-                results.append({
-                    "URL": url,
-                    "Đã index": "⚠️ Lỗi",
-                    "Ngày cache": str(e),
-                })
-
-            progress.progress(i / len(profiles))
-            time.sleep(delay)
-
-        st.success("🎉 Hoàn tất kiểm tra!")
-        result_df = pd.DataFrame(results)
-
-        # Xuất kết quả
-        output = BytesIO()
-        result_df.to_excel(output, index=False)
-        st.download_button("📥 Tải kết quả Excel", data=output.getvalue(), file_name="indexed_results.xlsx")
+st.sidebar.markdown("---")
+st.sidebar.info("Ứng dụng sử dụng truy vấn Google (miễn phí). Nếu bạn muốn kết quả ổn định hơn, cân nhắc dùng SerpAPI.")
